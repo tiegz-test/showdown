@@ -105,12 +105,33 @@
       pointer-events: none;
     }
 
-    .ctrl-pad {
-      display: grid;
-      grid-template-columns: repeat(3, 52px);
-      grid-template-rows: repeat(2, 52px);
-      gap: 6px;
+    /* Virtual joystick */
+    #joystick-wrap {
+      position: relative;
+      width: 110px;
+      height: 110px;
       pointer-events: auto;
+      flex-shrink: 0;
+    }
+    #joystick-base {
+      position: absolute;
+      inset: 0;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.08);
+      border: 2px solid rgba(255,255,255,0.25);
+    }
+    #joystick-nub {
+      position: absolute;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: radial-gradient(circle at 38% 38%, rgba(255,255,255,0.55), rgba(255,255,255,0.18));
+      border: 2px solid rgba(255,255,255,0.45);
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      pointer-events: none;
+      transition: transform 0.05s;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
     }
 
     .btn {
@@ -132,12 +153,6 @@
     .btn:active, .btn.pressed {
       background: rgba(255,255,255,0.35);
     }
-
-    /* d-pad layout: col2 row1 = up, col1 row2 = left, col2 row2 = down, col3 row2 = right */
-    .dpad-up    { grid-column: 2; grid-row: 1; }
-    .dpad-left  { grid-column: 1; grid-row: 2; }
-    .dpad-down  { grid-column: 2; grid-row: 2; }
-    .dpad-right { grid-column: 3; grid-row: 2; }
 
     .action-pad {
       display: grid;
@@ -195,12 +210,10 @@
 
   <!-- Controls -->
   <div id="controls">
-    <!-- Left: D-pad -->
-    <div class="ctrl-pad" id="dpad">
-      <div class="btn dpad-up"    data-action="up">↑</div>
-      <div class="btn dpad-left"  data-action="left">←</div>
-      <div class="btn dpad-down"  data-action="down">↓</div>
-      <div class="btn dpad-right" data-action="right">→</div>
+    <!-- Left: Virtual joystick -->
+    <div id="joystick-wrap">
+      <div id="joystick-base"></div>
+      <div id="joystick-nub"></div>
     </div>
     <!-- Right: Action buttons -->
     <div class="action-pad" id="action-pad">
@@ -307,13 +320,71 @@
     // P2 is CPU-controlled.
 
     function setupTouchControls() {
-      const dpad      = document.getElementById('dpad');
+      // ── Joystick ────────────────────────────────────────────────────────────
+      const joystickWrap = document.getElementById('joystick-wrap');
+      const nub          = document.getElementById('joystick-nub');
+      const RADIUS       = 55;   // max nub travel from center (px)
+      const DEAD_ZONE    = 0.18; // fraction of radius before input registers
+      let   stickTouchId = null;
+      let   stickOriginX = 0, stickOriginY = 0;
+
+      function updateStick(cx, cy) {
+        let dx = cx - stickOriginX;
+        let dy = cy - stickOriginY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const clamped = Math.min(dist, RADIUS);
+        const angle   = Math.atan2(dy, dx);
+        const nx      = Math.cos(angle) * clamped;
+        const ny      = Math.sin(angle) * clamped;
+
+        // Move nub visually
+        nub.style.transform = `translate(calc(-50% + ${nx}px), calc(-50% + ${ny}px))`;
+
+        // Derive directional inputs from normalised stick position
+        const nx_n = nx / RADIUS;  // -1..1
+        const ny_n = ny / RADIUS;
+
+        p1.input.left  = nx_n < -DEAD_ZONE;
+        p1.input.right = nx_n >  DEAD_ZONE;
+        p1.input.up    = ny_n < -DEAD_ZONE;
+        p1.input.down  = ny_n >  DEAD_ZONE;
+      }
+
+      function resetStick() {
+        stickTouchId = null;
+        nub.style.transform = 'translate(-50%, -50%)';
+        p1.input.left = p1.input.right = p1.input.up = p1.input.down = false;
+      }
+
+      joystickWrap.addEventListener('touchstart', e => {
+        e.preventDefault();
+        if (stickTouchId !== null) return;
+        const t = e.changedTouches[0];
+        stickTouchId = t.identifier;
+        const rect = joystickWrap.getBoundingClientRect();
+        stickOriginX = rect.left + rect.width  / 2;
+        stickOriginY = rect.top  + rect.height / 2;
+        updateStick(t.clientX, t.clientY);
+      }, { passive: false });
+
+      joystickWrap.addEventListener('touchmove', e => {
+        e.preventDefault();
+        for (const t of e.changedTouches) {
+          if (t.identifier === stickTouchId) {
+            updateStick(t.clientX, t.clientY);
+            break;
+          }
+        }
+      }, { passive: false });
+
+      joystickWrap.addEventListener('touchend',    e => { e.preventDefault(); resetStick(); }, { passive: false });
+      joystickWrap.addEventListener('touchcancel', e => { e.preventDefault(); resetStick(); }, { passive: false });
+
+      // ── Action buttons ───────────────────────────────────────────────────────
       const actionPad = document.getElementById('action-pad');
 
-      function handleTouch(e) {
+      function handleActionTouch(e) {
         e.preventDefault();
-        // Reset all inputs derived from these pads
-        p1.input.left = p1.input.right = p1.input.up = p1.input.down = false;
         p1.input.punch = p1.input.kick = p1.input.block = p1.input.special = false;
 
         for (const touch of e.touches) {
@@ -323,18 +394,15 @@
           if (action) p1.input[action] = true;
         }
 
-        // Visual feedback
         document.querySelectorAll('.btn').forEach(b => {
           b.classList.toggle('pressed', !!p1.input[b.dataset.action]);
         });
       }
 
-      [dpad, actionPad].forEach(el => {
-        el.addEventListener('touchstart',  handleTouch, { passive: false });
-        el.addEventListener('touchmove',   handleTouch, { passive: false });
-        el.addEventListener('touchend',    handleTouch, { passive: false });
-        el.addEventListener('touchcancel', handleTouch, { passive: false });
-      });
+      actionPad.addEventListener('touchstart',  handleActionTouch, { passive: false });
+      actionPad.addEventListener('touchmove',   handleActionTouch, { passive: false });
+      actionPad.addEventListener('touchend',    handleActionTouch, { passive: false });
+      actionPad.addEventListener('touchcancel', handleActionTouch, { passive: false });
     }
 
     // Keyboard (for desktop testing)
