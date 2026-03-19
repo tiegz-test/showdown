@@ -297,6 +297,7 @@
     }
 
     let p1, p2, round, timer, timerFrames, gamePhase, announceTimeout;
+    let projectiles = []; // { x, y, vx, dir, owner, dmg, kbx, kby, radius }
     // gamePhase: 'intro' | 'fight' | 'roundEnd' | 'gameOver'
 
     function initRound(rnd) {
@@ -307,6 +308,7 @@
 
       p1 = makeFighter(FIGHTERS[0], 'left');
       p2 = makeFighter(FIGHTERS[1], 'right');
+      projectiles = [];
 
       document.getElementById('round-label').textContent = 'RND ' + round;
       updateHealthBars();
@@ -464,10 +466,29 @@
             f.attackPhase = 'active';
             f.attackTimer = f.currentAttack.active;
             f.hitThisAttack = false;
+            // Launch projectile for special
+            if (f.state === 'special') {
+              const H  = canvas.height;
+              const s  = H * 0.12;
+              const cx = f.x * W;
+              const cy = H * GROUND_Y + f.y;
+              projectiles.push({
+                x:      cx + f.facing * s * 1.1,
+                y:      cy - s * 0.88,
+                vx:     f.facing * 7,
+                dir:    f.facing,
+                owner:  f,
+                dmg:    f.currentAttack.dmg,
+                kbx:    f.currentAttack.kbx,
+                kby:    f.currentAttack.kby,
+                radius: s * 0.35,
+              });
+              f.hitThisAttack = true; // projectile handles the hit
+            }
           }
         } else if (f.attackPhase === 'active') {
-          // Check hit
-          if (!f.hitThisAttack && !opp.blocking) {
+          // Check hit (not for special — projectile handles it)
+          if (!f.hitThisAttack && f.state !== 'special' && !opp.blocking) {
             const dist = Math.abs(f.x * W - opp.x * W);
             if (dist < f.currentAttack.range) {
               applyHit(f, opp);
@@ -580,6 +601,47 @@
         defender.state = 'ko';
         defender.hp = 0;
         setTimeout(() => endRound(attacker), 600);
+      }
+    }
+
+    function applyProjectileHit(proj, defender) {
+      if (defender.state === 'ko') return;
+      let dmg = proj.dmg;
+      if (defender.blocking) dmg = Math.floor(dmg * 0.15);
+      defender.hp = Math.max(0, defender.hp - dmg);
+      updateHealthBars();
+      if (!defender.blocking) {
+        defender.vx = proj.kbx * proj.dir;
+        defender.vy = proj.kby;
+        defender.onGround = false;
+        defender.state = 'hit';
+        defender.stateTimer = 12;
+        defender.currentAttack = null;
+        defender.attackPhase   = null;
+      }
+      if (defender.hp <= 0) {
+        defender.state = 'ko';
+        defender.hp = 0;
+        setTimeout(() => endRound(proj.owner), 600);
+      }
+    }
+
+    function updateProjectiles() {
+      const W = canvas.width;
+      const H = canvas.height;
+      const s = H * 0.12;
+      for (let i = projectiles.length - 1; i >= 0; i--) {
+        const proj = projectiles[i];
+        proj.x += proj.vx;
+        if (proj.x < 0 || proj.x > W) { projectiles.splice(i, 1); continue; }
+        const opp   = proj.owner === p1 ? p2 : p1;
+        if (opp.state === 'ko') { projectiles.splice(i, 1); continue; }
+        const oppCx = opp.x * W;
+        const oppCy = H * GROUND_Y + opp.y - s * 0.5;
+        if (Math.hypot(proj.x - oppCx, proj.y - oppCy) < s * 0.75) {
+          applyProjectileHit(proj, opp);
+          projectiles.splice(i, 1);
+        }
       }
     }
 
@@ -910,12 +972,32 @@
     }
 
     // ─── Main loop ────────────────────────────────────────────────────────────
+    function drawProjectiles() {
+      for (const proj of projectiles) {
+        ctx.save();
+        ctx.shadowColor = '#b050ff';
+        ctx.shadowBlur  = 22;
+        ctx.fillStyle   = 'rgba(180,80,255,0.88)';
+        ctx.beginPath();
+        ctx.arc(proj.x, proj.y, proj.radius, 0, Math.PI * 2);
+        ctx.fill();
+        // Bright inner core
+        ctx.shadowBlur  = 8;
+        ctx.fillStyle   = 'rgba(230,180,255,0.9)';
+        ctx.beginPath();
+        ctx.arc(proj.x, proj.y, proj.radius * 0.42, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
     function update() {
       if (gamePhase === 'fight') {
         updateCPU(p2, p1);
         updateFighter(p1, p2);
         updateFighter(p2, p1);
         separateFighters(p1, p2);
+        updateProjectiles();
         updateTimer();
       }
     }
@@ -925,6 +1007,7 @@
       drawBackground();
       drawFighter(p1);
       drawFighter(p2);
+      drawProjectiles();
     }
 
     let last = 0;
